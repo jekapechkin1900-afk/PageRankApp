@@ -1,0 +1,188 @@
+﻿<?xml version="1.0" encoding="utf-8" ?>
+<ContentPage xmlns="http://schemas.microsoft.com/dotnet/2021/maui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2009/xaml"
+             xmlns:viewModels="clr-namespace:PageRankApp.Maui.ViewModels"
+             xmlns:converters="clr-namespace:PageRankApp.Maui.Converters"
+             xmlns:toolkit="http://schemas.microsoft.com/dotnet/2022/maui/toolkit"
+             Title="Распределенный PageRank Визуализатор"
+             x:Class="PageRankApp.Maui.MainPage">
+
+    <ContentPage.BindingContext>
+        <viewModels:MainViewModel />
+    </ContentPage.BindingContext>
+
+    <ContentPage.Resources>
+        <converters:InverseBoolConverter x:Key="InverseBoolConverter" />
+        <converters:OpacityConverter x:Key="OpacityConverter" />
+        
+        <Style x:Key="SideBarButtonStyle" TargetType="Frame">
+            <Setter Property="Padding" Value="12"/>
+            <Setter Property="CornerRadius" Value="8"/>
+            <Setter Property="HasShadow" Value="False"/>
+            <Setter Property="BackgroundColor" Value="Transparent"/>
+            <Setter Property="BorderColor" Value="Transparent"/>
+            <Setter Property="VisualStateManager.VisualStateGroups">
+                <VisualStateGroupList>
+                    <VisualStateGroup x:Name="CommonStates">
+                        <VisualState x:Name="Normal" />
+                        <VisualState x:Name="PointerOver">
+                            <VisualState.Setters>
+                                <Setter Property="BackgroundColor" Value="#E5E7EB"/>
+                            </VisualState.Setters>
+                        </VisualState>
+                    </VisualStateGroup>
+                </VisualStateGroupList>
+            </Setter>
+        </Style>
+
+        <Style x:Key="IconStyle" TargetType="Image">
+            <Setter Property="WidthRequest" Value="24"/>
+            <Setter Property="HeightRequest" Value="24"/>
+            <Setter Property="Margin" Value="0,0,10,0"/>
+        </Style>
+
+        <Style x:Key="LabelStyle" TargetType="Label">
+            <Setter Property="VerticalOptions" Value="Center"/>
+            <Setter Property="FontSize" Value="14"/>
+            <Setter Property="TextColor" Value="#1F2937"/>
+        </Style>
+
+        <Style x:Key="SeparatorStyle" TargetType="BoxView">
+            <Setter Property="HeightRequest" Value="1"/>
+            <Setter Property="Color" Value="#E5E7EB"/>
+            <Setter Property="Margin" Value="0,15"/>
+        </Style>
+
+    </ContentPage.Resources>
+
+    <Grid ColumnDefinitions="320, *">
+
+        <Border Grid.Column="0" 
+                BackgroundColor="White"
+                StrokeThickness="0"
+                Padding="20">
+            <Border.Shadow>
+                <Shadow Brush="Black" Offset="4,0" Radius="15" Opacity="0.05"/>
+            </Border.Shadow>
+
+            <ScrollView>
+                <VerticalStackLayout Spacing="10">
+
+                    <Label Text="Панель управления"
+                           FontSize="22"
+                           FontAttributes="Bold"
+                           TextColor="#111827"
+                           Margin="0,0,0,20"/>
+
+                    <Label Text="РЕДАКТОР ГРАФА" FontSize="12" TextColor="#6B7280" FontAttributes="Bold"/>
+                    <Frame Style="{StaticResource SideBarButtonStyle}">
+                        <Frame.GestureRecognizers>
+                            <TapGestureRecognizer Command="{Binding AddNodeCommand}"/>
+                        </Frame.GestureRecognizers>
+                        <HorizontalStackLayout>
+                            <Image Source="add_node.png" Style="{StaticResource IconStyle}"/>
+                            <Label Text="Добавить узел" Style="{StaticResource LabelStyle}"/>
+                        </HorizontalStackLayout>
+                    </Frame>
+                    <Frame Style="{StaticResource SideBarButtonStyle}">
+                        <Frame.GestureRecognizers>
+                            <TapGestureRecognizer Command="{Binding AddEdgeCommand}"/>
+                        </Frame.GestureRecognizers>
+                        <HorizontalStackLayout>
+                            <Image Source="add_edge.png" Style="{StaticResource IconStyle}"/>
+                            <Label Text="Добавить связь" Style="{StaticResource LabelStyle}"/>
+                        </HorizontalStackLayout>
+                    </Frame>
+
+                    <BoxView Style="{StaticResource SeparatorStyle}"/>
+
+                    <Label Text="ОПЕРАЦИИ С ФАЙЛАМИ" FontSize="12" TextColor="#6B7280" FontAttributes="Bold"/>
+                    <Frame Style="{StaticResource SideBarButtonStyle}">
+                        <Frame.GestureRecognizers>
+                            <TapGestureRecognizer Command="{Binding LoadFromFileCommand}"/>
+                        </Frame.GestureRecognizers>
+                        <HorizontalStackLayout>
+                            <Image Source="folder_open.png" Style="{StaticResource IconStyle}"/>
+                            <Label Text="Загрузить из файла" Style="{StaticResource LabelStyle}"/>
+                        </HorizontalStackLayout>
+                    </Frame>
+
+                    <Frame Style="{StaticResource SideBarButtonStyle}"
+                           InputTransparent="{Binding CanSaveResults, Converter={StaticResource InverseBoolConverter}}"
+                           Opacity="{Binding CanSaveResults, Converter={StaticResource OpacityConverter}}">
+                        <Frame.GestureRecognizers>
+                            <TapGestureRecognizer Command="{Binding SaveResultsCommand}"/>
+                        </Frame.GestureRecognizers>
+                        <HorizontalStackLayout>
+                            <Image Source="save.png" Style="{StaticResource IconStyle}"/>
+                            <Label Text="Сохранить результат" Style="{StaticResource LabelStyle}"/>
+                        </HorizontalStackLayout>
+                    </Frame>
+
+                    <BoxView Style="{StaticResource SeparatorStyle}"/>
+
+                    <Label Text="УПРАВЛЕНИЕ" FontSize="12" TextColor="#6B7280" FontAttributes="Bold"/>
+                    <Button Command="{Binding ClearGraphCommand}" 
+                            Text="Очистить граф" 
+                            ImageSource="delete.png" 
+                            BackgroundColor="#FEF2F2" TextColor="#DC2626" BorderColor="#FEE2E2" BorderWidth="1"
+                            CornerRadius="8" Margin="0,0,0,10" HeightRequest="44"/>
+
+                    <Button Command="{Binding CalculateCommand}" 
+                            Text="Рассчитать PageRank" 
+                            ImageSource="play_circle.png"
+                            BackgroundColor="#10B981" TextColor="White" 
+                            FontAttributes="Bold" CornerRadius="8" HeightRequest="50"/>
+
+                    <BoxView Style="{StaticResource SeparatorStyle}"/>
+
+                    <toolkit:Expander xmlns:toolkit="http://schemas.microsoft.com/dotnet/2022/maui/toolkit">
+                        <toolkit:Expander.Header>
+                            <HorizontalStackLayout>
+                                <Image Source="settings.svg" WidthRequest="20" HeightRequest="20" Margin="0,0,10,0"/>
+                                <Label Text="Настройки подключения"
+                                       FontSize="14"
+                                       FontAttributes="Bold"
+                                       TextColor="#4B5563"
+                                       VerticalOptions="Center"/>
+                            </HorizontalStackLayout>
+                        </toolkit:Expander.Header>
+                        <VerticalStackLayout Padding="0,10,0,0" Spacing="8">
+                            <Label Text="IP-адрес планировщика" FontSize="12" TextColor="#6B7280"/>
+                            <Entry Text="{Binding SchedulerIpAddress}" 
+                                   Placeholder="_._._._"
+                                   Keyboard="Numeric"
+                                   BackgroundColor="#F9FAFB"
+                                   TextColor="#111827"/>
+
+                            <Label Text="Порт" FontSize="12" TextColor="#6B7280" Margin="0,5,0,0"/>
+                            <Entry Text="{Binding SchedulerPort}"
+                                   Placeholder="8888"
+                                   Keyboard="Numeric"
+                                   BackgroundColor="#F9FAFB"
+                                   TextColor="#111827"/>
+                        </VerticalStackLayout>
+                    </toolkit:Expander>
+
+                    <VerticalStackLayout VerticalOptions="EndAndExpand" Margin="0,20,0,0" Spacing="10">
+                        <ActivityIndicator IsRunning="{Binding IsBusy}" Color="#10B981"/>
+                        <Label Text="{Binding StatusMessage}" 
+                               TextColor="#6B7280" 
+                               HorizontalTextAlignment="Center" 
+                               FontSize="12"/>          
+                    </VerticalStackLayout>
+                </VerticalStackLayout>
+            </ScrollView>
+        </Border>
+
+        <Border Grid.Column="1" Margin="20" Stroke="#E5E7EB" StrokeThickness="1" BackgroundColor="White">
+            <Border.Shadow>
+                <Shadow Brush="Black" Offset="0,4" Radius="15" Opacity="0.08"/>
+            </Border.Shadow>
+            <GraphicsView x:Name="GraphCanvas"
+                          StartInteraction="OnStartInteraction"
+                          DragInteraction="OnDragInteraction"
+                          EndInteraction="OnEndInteraction" />
+        </Border>
+    </Grid>
+</ContentPage>
