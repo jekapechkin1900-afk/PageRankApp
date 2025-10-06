@@ -8,19 +8,23 @@ using System.Text;
 using System.Text.Json;
 using PageRankApp.Shared.Models;
 using PageRankApp.Shared.Network;
+using PageRankApp.Maui.Utils;
 
 namespace PageRankApp.Maui.ViewModels;
 
 public class MainViewModel : INotifyPropertyChanged
 {
-	private string _statusMessage = "Ready. Create or load a graph.";
+	private string _statusMessage = "Готово. Создайте или загрузите граф.";
 	private bool _isBusy;
 	private bool _areResultsCalculated = false;
 	private string _schedulerIpAddress;
 	private int _schedulerPort;
+	private const int LargeGraphThreshold = 500;
+
+	public bool IsGraphLarge => Nodes.Count > LargeGraphThreshold;
 	public bool CanSaveResults => !IsBusy && _areResultsCalculated;
-	public ObservableCollection<Node> Nodes { get; } = [];
-	public ObservableCollection<Edge> Edges { get; } = [];
+	public ObservableRangeCollection<Node> Nodes { get; } = [];
+	public ObservableRangeCollection<Edge> Edges { get; } = [];
 
 	public string SchedulerIpAddress
 	{
@@ -97,7 +101,7 @@ public class MainViewModel : INotifyPropertyChanged
 	{
 		if (!Nodes.Any())
 		{
-			StatusMessage = "Nothing to save. The graph is empty.";
+			StatusMessage = "Нечего сохранять. Граф пуст.";
 			return;
 		}
 
@@ -119,17 +123,37 @@ public class MainViewModel : INotifyPropertyChanged
 
 			if (fileSaverResult.IsSuccessful)
 			{
-				StatusMessage = $"Results successfully saved to {fileSaverResult.FilePath}";
+				StatusMessage = $"Результаты успешно сохранены в {fileSaverResult.FilePath}";
 			}
 			else
 			{
-				StatusMessage = $"Failed to save results: {fileSaverResult.Exception?.Message}";
+				StatusMessage = $"Ошибка при сохарнении результатов: {fileSaverResult.Exception?.Message}";
 			}
 		}
 		catch (Exception ex)
 		{
 			StatusMessage = $"An error occurred while saving: {ex.Message}";
 		}
+	}
+
+	private void OnGraphStructureChanged(string statusUpdateMessage = "")
+	{
+		OnPropertyChanged(nameof(IsGraphLarge));
+		if (_areResultsCalculated)
+		{
+			_areResultsCalculated = false;
+			UpdateCanSave(); 
+
+			if (string.IsNullOrEmpty(statusUpdateMessage))
+			{
+				StatusMessage = "Граф изменен. Требуется перерасчет.";
+			}
+		}
+		if (!string.IsNullOrEmpty(statusUpdateMessage))
+		{
+			StatusMessage = statusUpdateMessage;
+		}
+		InvalidateRequest?.Invoke();
 	}
 
 	private void OnAddNode()
@@ -141,38 +165,25 @@ public class MainViewModel : INotifyPropertyChanged
 			X = new Random().Next(50, 450),
 			Y = new Random().Next(50, 450)
 		});
-		InvalidateRequest?.Invoke();
-		if (_areResultsCalculated)
-		{
-			_areResultsCalculated = false;
-			UpdateCanSave();
-			StatusMessage = "Graph modified. Please recalculate.";
-		}
+		OnGraphStructureChanged();
 	}
 
 	private async Task OnAddEdge()
 	{
-		var sourceIdStr = await App.Current.MainPage.DisplayPromptAsync("Add Edge", "Enter Source Node ID:");
+		var sourceIdStr = await App.Current.MainPage.DisplayPromptAsync("Добавить связь", "Введите исходный узел ID:");
 		if (string.IsNullOrWhiteSpace(sourceIdStr) || !int.TryParse(sourceIdStr, out var sourceId)) return;
 
-		var targetIdStr = await App.Current.MainPage.DisplayPromptAsync("Add Edge", "Enter Target Node ID:");
+		var targetIdStr = await App.Current.MainPage.DisplayPromptAsync("Добавить связь", "Введите целевой узел ID:");
 		if (string.IsNullOrWhiteSpace(targetIdStr) || !int.TryParse(targetIdStr, out var targetId)) return;
 
 		if (Nodes.Any(n => n.Id == sourceId) && Nodes.Any(n => n.Id == targetId))
 		{
 			Edges.Add(new Edge { SourceId = sourceId, TargetId = targetId });
-			InvalidateRequest?.Invoke();
-
-			if (_areResultsCalculated)
-			{
-				_areResultsCalculated = false;
-				UpdateCanSave();
-				StatusMessage = "Graph modified. Please recalculate.";
-			}
+			OnGraphStructureChanged();
 		}
 		else
 		{
-			await App.Current.MainPage.DisplayAlert("Error", "One or both nodes do not exist.", "OK");
+			await App.Current.MainPage.DisplayAlert("Ошибка", "One or both nodes do not exist.", "OK");
 		}
 	}
 
@@ -180,65 +191,100 @@ public class MainViewModel : INotifyPropertyChanged
 	{
 		try
 		{
-			var result = await FilePicker.PickAsync(new PickOptions { PickerTitle = "Select a graph file (.txt)" });
+			var result = await FilePicker.PickAsync(new PickOptions
+			{
+				PickerTitle = "Выберите файл с данными графа (.txt)"
+			});
 			if (result == null) return;
+
 			OnClearGraph();
-			using var stream = await result.OpenReadAsync();
-			using var reader = new StreamReader(stream);
-			var tempNodes = new HashSet<int>();
-			string line;
-			while ((line = await reader.ReadLineAsync()) != null)
+			SetBusy(true, "Загрузка графа из файла...");
+
+			var (loadedNodes, loadedEdges) = await Task.Run(async () =>
 			{
-				var parts = line.Split([' ', '\t', ','], StringSplitOptions.RemoveEmptyEntries);
-				if (parts.Length == 2 && int.TryParse(parts[0], out var sourceId) && int.TryParse(parts[1], out var targetId))
+
+				var tempNodesDict = new Dictionary<int, Node>();
+				var tempEdges = new List<Edge>();
+
+				using var stream = await result.OpenReadAsync();
+				using var reader = new StreamReader(stream);
+
+				string line;
+				while ((line = await reader.ReadLineAsync()) != null)
 				{
-					Edges.Add(new Edge { SourceId = sourceId, TargetId = targetId });
-					tempNodes.Add(sourceId);
-					tempNodes.Add(targetId);
+					var parts = line.Split([' ', '\t', ','], StringSplitOptions.RemoveEmptyEntries);
+					if (parts.Length == 2 && int.TryParse(parts[0], out var sourceId) && int.TryParse(parts[1], out var targetId))
+					{
+						tempEdges.Add(new Edge { SourceId = sourceId, TargetId = targetId });
+
+						if (!tempNodesDict.ContainsKey(sourceId))
+						{
+							tempNodesDict[sourceId] = new Node { Id = sourceId };
+						}
+						if (!tempNodesDict.ContainsKey(targetId))
+						{
+							tempNodesDict[targetId] = new Node { Id = targetId };
+						}
+					}
 				}
-			}
-			foreach (var nodeId in tempNodes.OrderBy(id => id))
+
+				var random = new Random();
+				var nodeList = tempNodesDict.Values.OrderBy(n => n.Id).ToList();
+				foreach (var node in nodeList)
+				{
+					node.X = random.Next(50, 850);
+					node.Y = random.Next(50, 550);
+				}
+
+				return (nodeList, tempEdges);
+			});
+
+			StatusMessage = "Подготовка к отображению...";
+
+			await MainThread.InvokeOnMainThreadAsync(() =>
 			{
-				Nodes.Add(new Node { Id = nodeId, X = new Random().Next(50, 450), Y = new Random().Next(50, 450) });
-			}
-			InvalidateRequest?.Invoke();
-			StatusMessage = $"Graph loaded with {Nodes.Count} nodes and {Edges.Count} edges.";
-			_areResultsCalculated = false;
-			UpdateCanSave();
+				Nodes.AddRange(loadedNodes);
+				Edges.AddRange(loadedEdges);
+			});
+
+			var status = $"Граф загружен: {Nodes.Count} узлов, {Edges.Count} связей.";
+			OnGraphStructureChanged(status);
 		}
 		catch (Exception ex)
 		{
-			StatusMessage = $"Failed to load file: {ex.Message}";
+			StatusMessage = $"Ошибка при загрузке файла: {ex.Message}";
+		}
+		finally
+		{
+			SetBusy(false);
 		}
 	}
+
+
 
 	private void OnClearGraph()
 	{
 		Nodes.Clear();
 		Edges.Clear();
-		InvalidateRequest?.Invoke();
-		StatusMessage = "Graph cleared.";
-		_areResultsCalculated = false;
-		SaveResultsCommand.ChangeCanExecute();
-		OnPropertyChanged(nameof(CanSaveResults));
+		OnGraphStructureChanged("Граф очищен.");
 	}
 
 	private async Task OnCalculate()
 	{
 		if (!Nodes.Any())
 		{
-			StatusMessage = "Graph is empty. Nothing to calculate.";
+			StatusMessage = "Граф пуст. Нечего считать.";
 			return;
 		}
 
-		SetBusy(true, "Calculating...");
+		SetBusy(true, "Выполняется расчет...");
 		try
 		{
-			StatusMessage = "Connecting to scheduler...";
+			StatusMessage = "Подключени к планировщику...";
 			using var client = new TcpClient();
 			await client.ConnectAsync(SchedulerIpAddress, SchedulerPort); 
 			await using var stream = client.GetStream();
-			StatusMessage = "Connected. Sending graph...";
+			StatusMessage = "Подключено. Отправка графа...";
 
 			var graph = new Graph { Nodes = this.Nodes.ToList(), Edges = this.Edges.ToList() };
 			var message = new NetworkMessage
@@ -248,31 +294,36 @@ public class MainViewModel : INotifyPropertyChanged
 			};
 
 			await NetworkHelper.WriteMessageAsync(stream, message);
-			StatusMessage = "Graph sent. Waiting for results...";
+			StatusMessage = "Граф отправлен. Ожидание результатов...";
 
 			var resultMessage = await NetworkHelper.ReadMessageAsync(stream);
 			if (resultMessage?.Type == MessageType.CalculationComplete)
 			{
 				var ranks = JsonSerializer.Deserialize<Dictionary<int, double>>(resultMessage.JsonPayload);
-				foreach (var node in Nodes)
+				await MainThread.InvokeOnMainThreadAsync(() =>
 				{
-					if (ranks.TryGetValue(node.Id, out var rank))
+					StatusMessage = "Обновление рангов...";
+					var nodeDict = Nodes.ToDictionary(n => n.Id);
+					foreach (var rankEntry in ranks)
 					{
-						node.Rank = rank;
+						if (nodeDict.TryGetValue(rankEntry.Key, out var node))
+						{
+							node.Rank = rankEntry.Value;
+						}
 					}
-				}
-				InvalidateRequest?.Invoke();
-				StatusMessage = "Calculation complete! Ranks updated.";
+				});
+				var status = "Расчеты завершены! Ранги обновлены.";
+				OnGraphStructureChanged(status);
 				_areResultsCalculated = true;
 			}
 			else
 			{
-				StatusMessage = "Received an unexpected response from the scheduler.";
+				StatusMessage = "Получен неожиданный ответ от планировщика.";
 			}
 		}
 		catch (Exception ex)
 		{
-			StatusMessage = $"Error: {ex.Message}";
+			StatusMessage = $"Ошибка: {ex.Message}";
 			Debug.WriteLine(ex);
 		}
 		finally

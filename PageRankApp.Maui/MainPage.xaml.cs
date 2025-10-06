@@ -29,6 +29,8 @@ public partial class MainPage : ContentPage
 
 	private void OnStartInteraction(object sender, TouchEventArgs e)
 	{
+		if (_viewModel.IsGraphLarge) return;
+
 		if (e.Touches.Length > 0)
 		{
 			var touchPoint = e.Touches[0];
@@ -44,6 +46,8 @@ public partial class MainPage : ContentPage
 
 	private void OnDragInteraction(object sender, TouchEventArgs e)
 	{
+		if (_viewModel.IsGraphLarge) return;
+
 		if (_draggedNode != null && e.Touches.Length > 0)
 		{
 			var touchPoint = e.Touches[0];
@@ -57,6 +61,8 @@ public partial class MainPage : ContentPage
 
 	private void OnEndInteraction(object sender, TouchEventArgs e)
 	{
+		if (_viewModel.IsGraphLarge) return;
+
 		_draggedNode = null;
 		_graphDrawable.SelectedNode = null;
 		GraphCanvas.Invalidate();

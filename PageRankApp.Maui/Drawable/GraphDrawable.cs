@@ -5,6 +5,7 @@ namespace PageRankApp.Maui.Drawable;
 
 public class GraphDrawable : IDrawable
 {
+	private const int LargeGraphThreshold = 500;
 	public ObservableCollection<Node> Nodes { get; set; } = [];
 	public ObservableCollection<Edge> Edges { get; set; } = [];
 
@@ -14,45 +15,71 @@ public class GraphDrawable : IDrawable
 	{
 		if (Nodes == null || Edges == null) return;
 
-		canvas.StrokeColor = Colors.LightGray;
-		canvas.StrokeSize = 2;
-		foreach (var edge in Edges)
-		{
-			var source = Nodes.FirstOrDefault(n => n.Id == edge.SourceId);
-			var target = Nodes.FirstOrDefault(n => n.Id == edge.TargetId);
-			if (source != null && target != null)
-			{
-				DrawArrow(canvas, (float)source.X, (float)source.Y, (float)target.X, (float)target.Y);
-			}
-		}
+		bool isLarge = Nodes.Count > LargeGraphThreshold;
 
-		foreach (var node in Nodes)
+		if (isLarge)
 		{
-			float nodeSize = 35;
-			var rect = new RectF((float)node.X - nodeSize / 2, (float)node.Y - nodeSize / 2, nodeSize, nodeSize);
-
-			if (node == SelectedNode)
+			canvas.StrokeColor = Colors.LightGray.WithAlpha(0.2f);
+			canvas.StrokeSize = 1;
+			foreach (var edge in Edges)
 			{
-				canvas.FillColor = Colors.OrangeRed;
+				var source = Nodes.FirstOrDefault(n => n.Id == edge.SourceId);
+				var target = Nodes.FirstOrDefault(n => n.Id == edge.TargetId);
+				if (source != null && target != null)
+				{
+					canvas.DrawLine((float)source.X, (float)source.Y, (float)target.X, (float)target.Y);
+				}
 			}
-			else
+
+			foreach (var node in Nodes)
 			{
 				canvas.FillColor = GetColorForRank(node.Rank);
+				canvas.FillRectangle((float)node.X, (float)node.Y, 2, 2);
+			}
+		}
+		else
+		{
+			canvas.StrokeColor = Colors.LightGray;
+			canvas.StrokeSize = 2;
+			foreach (var edge in Edges)
+			{
+				var source = Nodes.FirstOrDefault(n => n.Id == edge.SourceId);
+				var target = Nodes.FirstOrDefault(n => n.Id == edge.TargetId);
+				if (source != null && target != null)
+				{
+					DrawArrow(canvas, (float)source.X, (float)source.Y, (float)target.X, (float)target.Y);
+				}
 			}
 
-			canvas.FillEllipse(rect);
+			foreach (var node in Nodes)
+			{
+				float nodeSize = 35;
+				var rect = new RectF((float)node.X - nodeSize / 2, (float)node.Y - nodeSize / 2, nodeSize, nodeSize);
 
-			canvas.StrokeColor = Colors.DarkSlateGray;
-			canvas.StrokeSize = 2;
-			canvas.DrawEllipse(rect);
+				if (node == SelectedNode)
+				{
+					canvas.FillColor = Colors.OrangeRed;
+				}
+				else
+				{
+					canvas.FillColor = GetColorForRank(node.Rank);
+				}
 
-			canvas.FontColor = Colors.Black;
-			canvas.FontSize = 12;
-			canvas.DrawString(node.Id.ToString(), rect, HorizontalAlignment.Center, VerticalAlignment.Center);
+				canvas.FillEllipse(rect);
 
-			canvas.FontSize = 10;
-			canvas.FontColor = Colors.DarkBlue;
-			canvas.DrawString($"{node.Rank:F4}", (float)node.X, (float)node.Y + nodeSize / 2 + 5, HorizontalAlignment.Center);
+				canvas.StrokeColor = Colors.DarkSlateGray;
+				canvas.StrokeSize = 2;
+				canvas.DrawEllipse(rect);
+
+				canvas.FontColor = Colors.Black;
+				canvas.FontSize = 12;
+				canvas.DrawString(node.Id.ToString(), rect, HorizontalAlignment.Center, VerticalAlignment.Center);
+
+				canvas.FontSize = 10;
+				canvas.FontColor = Colors.DarkBlue;
+				canvas.DrawString($"{node.Rank:F4}", (float)node.X, (float)node.Y + nodeSize / 2 + 5, HorizontalAlignment.Center);
+			}
+
 		}
 	}
 
