@@ -7,13 +7,14 @@ listener.Start();
 Console.WriteLine("Scheduler is running on port 8888...");
 Console.WriteLine("Waiting for connections from MAUI client and Solvers...");
 
+_ = Task.Run(Scheduler.TaskDispatcherLoop);
+
 while (true)
 {
 	try
 	{
 		var tcpClient = await listener.AcceptTcpClientAsync();
-		var connection = new ClientConnection(tcpClient);
-		_ = Scheduler.HandleConnectionAsync(connection);
+		_ = Scheduler.HandleNewConnectionAsync(new ClientConnection(tcpClient));
 	}
 	catch (Exception ex)
 	{

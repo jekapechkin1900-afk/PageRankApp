@@ -1,5 +1,6 @@
 ﻿using System.Collections.Concurrent;
 using System.Text.Json;
+using PageRankApp.Scheduler.Models;
 using PageRankApp.Shared.Models;
 using PageRankApp.Shared.Network;
 
@@ -7,42 +8,60 @@ namespace PageRankApp.Scheduler;
 
 public static class Scheduler
 {
-	// Потокобезопасные коллекции для хранения подключений
-	private static readonly ConcurrentDictionary<Guid, ClientConnection> _solvers = new();
-	private static ClientConnection? _mauiClient;
+	private static readonly ConcurrentDictionary<Guid, ClientConnection> _allSolvers = new();
+	private static readonly ConcurrentQueue<ClientConnection> _availableSolvers = new();
+	private static readonly ConcurrentQueue<CalculationTask> _largeTaskQueue = new();
+	private static readonly ConcurrentQueue<CalculationTask> _smallTaskQueue = new();
 
-	// Параметры алгоритма PageRank
 	private const double DampingFactor = 0.85;
 	private const int MaxIterations = 30;
-	private const double Epsilon = 1e-6; // Порог для определения сходимости
+	private const double Epsilon = 1e-6;
 
-	public static async Task HandleConnectionAsync(ClientConnection connection)
+	private static volatile bool _isLargeTaskRunning = false;
+
+	public const int LargeGraphNodeThreshold = 1000;
+	private const double LargeTaskSolverQuota = 0.7;
+	private const int SolversPerSmallTask = 2;
+
+	public static async Task HandleNewConnectionAsync(ClientConnection connection)
 	{
 		Console.WriteLine($"Client connected from {connection.RemoteEndPoint}. Awaiting identification...");
 
 		try
 		{
-			// Первое сообщение от клиента должно быть для его идентификации
 			var initialMessage = await connection.ReadMessageAsync();
-			if (initialMessage == null) return; // Клиент отсоединился
+			if (initialMessage == null) return;
 
-			// Определяем, кто подключился: MAUI клиент или решатель
 			if (initialMessage.Type == MessageType.RegisterSolver)
 			{
-				_solvers.TryAdd(connection.Id, connection);
-				Console.WriteLine($"Solver registered. Total solvers: {_solvers.Count}. ID: {connection.Id}");
+				_allSolvers.TryAdd(connection.Id, connection);
+				_availableSolvers.Enqueue(connection);
+				Console.WriteLine($"Solver registered. Total solvers: {_allSolvers.Count}. Available: {_availableSolvers.Count}");
 			}
 			else if (initialMessage.Type == MessageType.SubmitGraph)
 			{
-				// Если это MAUI клиент, сохраняем его и начинаем обработку графа
-				_mauiClient = connection;
-				Console.WriteLine("MAUI client connected and submitted a graph.");
-				await ProcessGraphRequest(initialMessage);
-			}
-			else
-			{
-				Console.WriteLine("Unknown client type. Disconnecting.");
-				connection.Disconnect();
+				var graph = JsonSerializer.Deserialize<Graph>(initialMessage.JsonPayload);
+				if (graph == null) { connection.Disconnect(); return; }
+
+				var task = new CalculationTask(connection, graph);
+
+				if (task.IsLargeTask)
+				{
+					int requiredForLargeTask = (int)Math.Ceiling(_allSolvers.Count * LargeTaskSolverQuota);
+					if (_allSolvers.Count < requiredForLargeTask || requiredForLargeTask == 0)
+					{
+						Console.WriteLine($"[Task {task.TaskId}] REJECTED. Not enough total solvers ({_allSolvers.Count}) to run a large task (needs at least {requiredForLargeTask}).");
+						connection.Disconnect();
+						return;
+					}
+					_largeTaskQueue.Enqueue(task);
+					Console.WriteLine($"[Task {task.TaskId}] Queued as LARGE. Pending large tasks: {_largeTaskQueue.Count}");
+				}
+				else
+				{
+					_smallTaskQueue.Enqueue(task);
+					Console.WriteLine($"[Task {task.TaskId}] Queued as SMALL. Pending small tasks: {_smallTaskQueue.Count}");
+				}
 			}
 		}
 		catch (Exception ex)
@@ -52,63 +71,90 @@ public static class Scheduler
 		}
 	}
 
-	private static async Task ProcessGraphRequest(NetworkMessage graphMessage)
+	public static async Task TaskDispatcherLoop()
 	{
-		if (_mauiClient == null)
+		Console.WriteLine("Advanced Task Dispatcher is running.");
+		while (true)
 		{
-			Console.WriteLine("Cannot process graph: MAUI client is not connected.");
-			return;
-		}
-
-		if (_solvers.IsEmpty)
-		{
-			Console.WriteLine("No solvers available to perform calculation.");
-			// Можно отправить сообщение об ошибке клиенту
-			return;
-		}
-
-		try
-		{
-			var graph = JsonSerializer.Deserialize<Graph>(graphMessage.JsonPayload);
-			if (graph == null || graph.Nodes.Count == 0)
+			if (!_isLargeTaskRunning && _largeTaskQueue.TryPeek(out _))
 			{
-				Console.WriteLine("Received empty or invalid graph.");
-				return;
+				int requiredForLargeTask = (int)Math.Ceiling(_allSolvers.Count * LargeTaskSolverQuota);
+				if (_availableSolvers.Count >= requiredForLargeTask)
+				{
+					if (_largeTaskQueue.TryDequeue(out var largeTask))
+					{
+						_isLargeTaskRunning = true; 
+						Console.WriteLine($"Starting LARGE task {largeTask.TaskId}. Locking large task slot.");
+						_ = ProcessTaskAsync(largeTask, requiredForLargeTask);
+					}
+				}
 			}
 
-			Console.WriteLine($"Graph received with {graph.Nodes.Count} nodes and {graph.Edges.Count} edges. Starting calculation...");
-
-			var finalRanks = await CalculatePageRankDistributedAsync(graph);
-
-			Console.WriteLine("Calculation complete. Sending results back to MAUI client.");
-
-			var resultMessage = new NetworkMessage
+			if (_smallTaskQueue.TryPeek(out _))
 			{
-				Type = MessageType.CalculationComplete,
-				JsonPayload = JsonSerializer.Serialize(finalRanks)
-			};
+				int totalSmallQuota = _allSolvers.Count - (int)Math.Ceiling(_allSolvers.Count * LargeTaskSolverQuota);
+				int largeTaskSolversInUse = _isLargeTaskRunning ? (int)Math.Ceiling(_allSolvers.Count * LargeTaskSolverQuota) : 0;
+				int availableForSmallTasks = _availableSolvers.Count;
 
-			await _mauiClient.WriteMessageAsync(resultMessage);
-		}
-		catch (JsonException jsonEx)
-		{
-			Console.WriteLine($"Failed to deserialize graph: {jsonEx.Message}");
-		}
-		catch (Exception ex)
-		{
-			Console.WriteLine($"An error occurred during PageRank calculation: {ex.Message}");
-		}
-		finally 
-		{
-			Console.WriteLine("Disconnecting MAUI client.");
-			_mauiClient.Disconnect();
-			_mauiClient = null;
+				if (availableForSmallTasks >= SolversPerSmallTask)
+				{
+					if (_smallTaskQueue.TryDequeue(out var smallTask))
+					{
+						Console.WriteLine($"Starting SMALL task {smallTask.TaskId}.");
+						_ = ProcessTaskAsync(smallTask, SolversPerSmallTask);
+					}
+				}
+			}
+
+			await Task.Delay(500);
 		}
 	}
 
-	private static async Task<Dictionary<int, double>> CalculatePageRankDistributedAsync(Graph graph)
+	private static async Task ProcessTaskAsync(CalculationTask task, int solversToAllocate)
+	{
+		List<ClientConnection> assignedSolvers = [];
+		try
+		{
+			for (int i = 0; i < solversToAllocate; i++)
+			{
+				if (_availableSolvers.TryDequeue(out var solver)) assignedSolvers.Add(solver);
+			}
+			Console.WriteLine($"[Task {task.TaskId}] {assignedSolvers.Count} solvers allocated. POOL: {_availableSolvers.Count} left.");
+
+			var finalRanks = await CalculatePageRankDistributedAsync(task.Graph, assignedSolvers);
+
+			var resultMessage = new NetworkMessage { Type = MessageType.CalculationComplete, JsonPayload = JsonSerializer.Serialize(finalRanks) };
+			await task.MauiClient.WriteMessageAsync(resultMessage);
+		}
+		catch (Exception ex)
+		{ 
+
+		}
+		finally
+		{
+			Console.WriteLine($"[Task {task.TaskId}] Task finished. Returning {assignedSolvers.Count} solvers.");
+			foreach (var solver in assignedSolvers)
+			{
+				if (solver.IsConnected) _availableSolvers.Enqueue(solver);
+				else _allSolvers.TryRemove(solver.Id, out _); 
+			}
+
+			if (task.IsLargeTask)
+			{
+				_isLargeTaskRunning = false;
+				Console.WriteLine($"Large task slot is now free.");
+			}
+			Console.WriteLine($"POOL STATUS: {_availableSolvers.Count} solvers are now available.");
+			task.MauiClient.Disconnect();
+		}
+	}
+
+
+	private static async Task<Dictionary<int, double>> CalculatePageRankDistributedAsync(Graph graph, List<ClientConnection> solvers)
 	{
 		int nodeCount = graph.Nodes.Count;
+		if (nodeCount == 0) return [];
+
 		var ranks = graph.Nodes.ToDictionary(n => n.Id, n => 1.0 / nodeCount);
 
 		var outgoingLinks = graph.Nodes.ToDictionary(
@@ -118,22 +164,23 @@ public static class Scheduler
 
 		for (int i = 0; i < MaxIterations; i++)
 		{
-			Console.WriteLine($"--- Iteration {i + 1} ---");
+			Console.WriteLine($"--- Iteration {i + 1} for task... ---");
 
 			var previousRanks = new Dictionary<int, double>(ranks);
 			var tasks = new List<Task<PartialResult>>();
-			var availableSolvers = _solvers.Values.ToList();
-			var nodePartitions = Partition(graph.Nodes, availableSolvers.Count);
+			var nodePartitions = Partition(graph.Nodes, solvers.Count);
 
-			for (int j = 0; j < availableSolvers.Count; j++)
+			for (int j = 0; j < solvers.Count; j++)
 			{
-				var solver = availableSolvers[j];
+				var solver = solvers[j];
 				var nodePartition = nodePartitions[j];
+
+				if (nodePartition.Count == 0) continue;
 
 				var solverTask = new SolverTask
 				{
 					FullGraph = graph,
-					NodeIdsToCalculate = [.. nodePartition.Select(n => n.Id)],
+					NodeIdsToCalculate = nodePartition.Select(n => n.Id).ToList(),
 					CurrentRanks = ranks,
 					OutgoingLinks = outgoingLinks
 				};
@@ -146,9 +193,18 @@ public static class Scheduler
 			var newRanks = new Dictionary<int, double>();
 			foreach (var result in partialResults)
 			{
+				if (result?.CalculatedRanks == null) continue;
 				foreach (var rankEntry in result.CalculatedRanks)
 				{
 					newRanks[rankEntry.Key] = rankEntry.Value;
+				}
+			}
+
+			foreach (var nodeId in ranks.Keys)
+			{
+				if (!newRanks.ContainsKey(nodeId))
+				{
+					newRanks[nodeId] = ranks[nodeId];
 				}
 			}
 
@@ -160,7 +216,7 @@ public static class Scheduler
 
 			ranks = newRanks;
 
-			double diff = previousRanks.Sum(kvp => Math.Abs(kvp.Value - ranks[kvp.Key]));
+			double diff = previousRanks.Sum(kvp => Math.Abs(kvp.Value - ranks.GetValueOrDefault(kvp.Key, 0)));
 			Console.WriteLine($"Iteration {i + 1} finished. Change (L1 Norm): {diff}");
 			if (diff < Epsilon)
 			{
@@ -184,7 +240,8 @@ public static class Scheduler
 		var response = await solver.ReadMessageAsync();
 		if (response?.Type != MessageType.PartialResult)
 		{
-			throw new InvalidOperationException($"Solver {solver.Id} returned an unexpected message type.");
+			Console.WriteLine($"Warning: Solver {solver.Id} returned an unexpected message type or disconnected.");
+			return new PartialResult { CalculatedRanks = new Dictionary<int, double>() };
 		}
 
 		return JsonSerializer.Deserialize<PartialResult>(response.JsonPayload) ?? new PartialResult();

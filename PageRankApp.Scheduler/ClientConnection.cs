@@ -3,29 +3,20 @@ using PageRankApp.Shared.Network;
 
 namespace PageRankApp.Scheduler;
 
-public class ClientConnection
+public class ClientConnection(TcpClient tcpClient)
 {
 	public Guid Id { get; } = Guid.NewGuid();
-	private readonly TcpClient _tcpClient;
-	private readonly NetworkStream _stream;
+	private readonly TcpClient _tcpClient = tcpClient;
+	private readonly NetworkStream _stream = tcpClient.GetStream();
 
+	public bool IsConnected => _tcpClient.Connected;
 	public string RemoteEndPoint => _tcpClient.Client.RemoteEndPoint?.ToString() ?? "N/A";
 
-	public ClientConnection(TcpClient tcpClient)
-	{
-		_tcpClient = tcpClient;
-		_stream = tcpClient.GetStream();
-	}
-
-	public async Task WriteMessageAsync(NetworkMessage message)
-	{
+	public async Task WriteMessageAsync(NetworkMessage message) => 
 		await NetworkHelper.WriteMessageAsync(_stream, message);
-	}
 
-	public async Task<NetworkMessage?> ReadMessageAsync()
-	{
-		return await NetworkHelper.ReadMessageAsync(_stream);
-	}
+	public async Task<NetworkMessage?> ReadMessageAsync() => 
+		await NetworkHelper.ReadMessageAsync(_stream);
 
 	public void Disconnect()
 	{
