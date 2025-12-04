@@ -1,7 +1,7 @@
 ﻿
 Microsoft Visual Studio Solution File, Format Version 12.00
 # Visual Studio Version 17
-VisualStudioVersion = 17.14.36511.14 d17.14
+VisualStudioVersion = 17.14.36511.14
 MinimumVisualStudioVersion = 10.0.40219.1
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "PageRankApp.Shared", "PageRankApp.Shared\PageRankApp.Shared.csproj", "{785EDDC3-B86F-439A-9A98-22F43791C00B}"
 EndProject
@@ -10,6 +10,8 @@ EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "PageRankApp.Solver", "PageRankApp.Solver\PageRankApp.Solver.csproj", "{AA55222F-76C4-4A92-A2E3-27B7F67EF729}"
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "PageRankApp.Maui", "PageRankApp.Maui\PageRankApp.Maui.csproj", "{7A740484-14B2-419A-A7D5-91FFC4EDC870}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "PageRankApp.Tests", "PageRankApp.Tests\PageRankApp.Tests.csproj", "{30108EC5-73AB-410B-BB51-1B3B4DE2974F}"
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
@@ -34,6 +36,10 @@ Global
 		{7A740484-14B2-419A-A7D5-91FFC4EDC870}.Debug|Any CPU.Deploy.0 = Debug|Any CPU
 		{7A740484-14B2-419A-A7D5-91FFC4EDC870}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{7A740484-14B2-419A-A7D5-91FFC4EDC870}.Release|Any CPU.Build.0 = Release|Any CPU
+		{30108EC5-73AB-410B-BB51-1B3B4DE2974F}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{30108EC5-73AB-410B-BB51-1B3B4DE2974F}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{30108EC5-73AB-410B-BB51-1B3B4DE2974F}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{30108EC5-73AB-410B-BB51-1B3B4DE2974F}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
