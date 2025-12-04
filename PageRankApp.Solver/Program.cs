@@ -17,10 +17,12 @@ while (true)
 
 		var stream = client.GetStream();
 		Console.WriteLine("Successfully connected to scheduler. Registering...");
-
+ 
 		var registerMessage = new NetworkMessage { Type = MessageType.RegisterSolver, JsonPayload = "" };
 		await NetworkHelper.WriteMessageAsync(stream, registerMessage);
 		Console.WriteLine("Registered as a solver. Waiting for tasks...");
+
+		var heartbeatTask = StartHeartbeatLoop(stream);
 
 		while (client.Connected)
 		{
@@ -58,4 +60,23 @@ while (true)
 
 	Console.WriteLine("Connection lost. Will try to reconnect in 5 seconds...");
 	await Task.Delay(TimeSpan.FromSeconds(5));
+}
+
+
+static async Task StartHeartbeatLoop(NetworkStream stream)
+{
+	try
+	{
+		while (true)
+		{
+			await Task.Delay(200);
+
+			var msg = new NetworkMessage { Type = MessageType.Heartbeat };
+
+			await NetworkHelper.WriteMessageAsync(stream, msg);
+		}
+	}
+	catch
+	{
+	}
 }

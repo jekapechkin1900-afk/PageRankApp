@@ -1,5 +1,6 @@
 ﻿using System.Collections.Concurrent;
 using System.Text.Json;
+using System.Net.Sockets;
 using PageRankApp.Scheduler.Models;
 using PageRankApp.Shared.Models;
 using PageRankApp.Shared.Network;
@@ -10,23 +11,45 @@ public static class Scheduler
 {
 	private static readonly ConcurrentDictionary<Guid, ClientConnection> _allSolvers = new();
 	private static readonly ConcurrentQueue<ClientConnection> _availableSolvers = new();
+	private static readonly ConcurrentDictionary<Guid, bool> _solverBusyState = new();
 	private static readonly ConcurrentQueue<CalculationTask> _largeTaskQueue = new();
 	private static readonly ConcurrentQueue<CalculationTask> _smallTaskQueue = new();
 
-	private const double DampingFactor = 0.85;
 	private const int MaxIterations = 30;
 	private const double Epsilon = 1e-6;
 
 	private static volatile bool _isLargeTaskRunning = false;
+	private static int _crashedSolversCount = 0;
 
 	public const int LargeGraphNodeThreshold = 1000;
 	private const double LargeTaskSolverQuota = 0.7;
 	private const int SolversPerSmallTask = 2;
 
+	public static async Task Main(string[] args)
+	{
+		_ = Task.Run(TaskDispatcherLoop);
+		_ = Task.Run(WatchdogLoop);
+
+		var listener = new TcpListener(System.Net.IPAddress.Any, 8888);
+		listener.Start();
+		Console.WriteLine("Scheduler started on port 8888.");
+
+		while (true)
+		{
+			try
+			{
+				var tcpClient = await listener.AcceptTcpClientAsync();
+				_ = HandleNewConnectionAsync(new ClientConnection(tcpClient));
+			}
+			catch (Exception ex)
+			{
+				Console.WriteLine($"Accept error: {ex.Message}");
+			}
+		}
+	}
+
 	public static async Task HandleNewConnectionAsync(ClientConnection connection)
 	{
-		Console.WriteLine($"Client connected from {connection.RemoteEndPoint}. Awaiting identification...");
-
 		try
 		{
 			var initialMessage = await connection.ReadMessageAsync();
@@ -36,7 +59,10 @@ public static class Scheduler
 			{
 				_allSolvers.TryAdd(connection.Id, connection);
 				_availableSolvers.Enqueue(connection);
-				Console.WriteLine($"Solver registered. Total solvers: {_allSolvers.Count}. Available: {_availableSolvers.Count}");
+				_solverBusyState[connection.Id] = false;
+
+				Console.WriteLine($"Solver registered. Total: {_allSolvers.Count}. Available: {_availableSolvers.Count}");
+				_ = MonitorSolverConnectionAsync(connection);
 			}
 			else if (initialMessage.Type == MessageType.SubmitGraph)
 			{
@@ -47,62 +73,132 @@ public static class Scheduler
 
 				if (task.IsLargeTask)
 				{
-					int requiredForLargeTask = (int)Math.Ceiling(_allSolvers.Count * LargeTaskSolverQuota);
-					if (_allSolvers.Count < requiredForLargeTask || requiredForLargeTask == 0)
-					{
-						Console.WriteLine($"[Task {task.TaskId}] REJECTED. Not enough total solvers ({_allSolvers.Count}) to run a large task (needs at least {requiredForLargeTask}).");
-						connection.Disconnect();
-						return;
-					}
 					_largeTaskQueue.Enqueue(task);
-					Console.WriteLine($"[Task {task.TaskId}] Queued as LARGE. Pending large tasks: {_largeTaskQueue.Count}");
+					Console.WriteLine($"Task {task.TaskId} queued (LARGE). Queue size: {_largeTaskQueue.Count}");
 				}
 				else
 				{
 					_smallTaskQueue.Enqueue(task);
-					Console.WriteLine($"[Task {task.TaskId}] Queued as SMALL. Pending small tasks: {_smallTaskQueue.Count}");
+					Console.WriteLine($"Task {task.TaskId} queued (SMALL). Queue size: {_smallTaskQueue.Count}");
 				}
 			}
+			else if (initialMessage.Type == MessageType.GetClusterStatus)
+			{
+				int total = _allSolvers.Count;
+				int busy = _solverBusyState.Count(kvp => kvp.Value == true && _allSolvers.ContainsKey(kvp.Key));
+				int free = total - busy;
+				if (free < 0) free = 0;
+
+				var status = new ClusterStatusInfo
+				{
+					TotalSolvers = total,
+					AvailableSolvers = free,
+					BusySolvers = busy,
+					CrashedSolvers = _crashedSolversCount
+				};
+
+				await connection.WriteMessageAsync(new NetworkMessage
+				{
+					Type = MessageType.ClusterStatusResponse,
+					JsonPayload = JsonSerializer.Serialize(status)
+				});
+
+				connection.Disconnect();
+			}
 		}
-		catch (Exception ex)
+		catch
 		{
-			Console.WriteLine($"Error during connection handling for {connection.Id}: {ex.Message}");
 			connection.Disconnect();
+		}
+	}
+
+	private static async Task MonitorSolverConnectionAsync(ClientConnection connection)
+	{
+		try
+		{
+			var socket = connection.Client;
+			while (connection.IsConnected)
+			{
+				if (_solverBusyState.TryGetValue(connection.Id, out var isBusy) && isBusy)
+				{
+					await Task.Delay(1000);
+					continue;
+				}
+
+				if (socket.Poll(1000, SelectMode.SelectRead))
+				{
+					if (socket.Available == 0)
+					{
+						throw new Exception("Disconnected");
+					}
+
+					connection.UpdateHeartbeat();
+				}
+
+				await Task.Delay(200);
+			}
+		}
+		catch
+		{
+			CleanupSolver(connection, "Connection dropped");
+		}
+	}
+
+	private static void CleanupSolver(ClientConnection solver, string reason)
+	{
+		if (!solver.IsConnected && !_allSolvers.ContainsKey(solver.Id)) return; 
+
+		Console.WriteLine($"Solver {solver.Id} removing: {reason}");
+		solver.Disconnect();
+
+		if (_allSolvers.TryRemove(solver.Id, out _))
+		{
+			Interlocked.Increment(ref _crashedSolversCount);
+			_solverBusyState.TryRemove(solver.Id, out _);
+		}
+	}
+
+	public static async Task WatchdogLoop()
+	{
+		while (true)
+		{
+			var now = DateTime.UtcNow;
+			var timeout = TimeSpan.FromSeconds(15.0);
+
+			foreach (var kvp in _allSolvers)
+			{
+				var solver = kvp.Value;
+				if (now - solver.LastHeartbeat > timeout)
+				{
+					CleanupSolver(solver, "Watchdog timeout");
+				}
+			}
+			await Task.Delay(1000);
 		}
 	}
 
 	public static async Task TaskDispatcherLoop()
 	{
-		Console.WriteLine("Advanced Task Dispatcher is running.");
 		while (true)
 		{
 			if (!_isLargeTaskRunning && _largeTaskQueue.TryPeek(out _))
 			{
-				int requiredForLargeTask = (int)Math.Ceiling(_allSolvers.Count * LargeTaskSolverQuota);
-				if (_availableSolvers.Count >= requiredForLargeTask)
+				int required = (int)Math.Ceiling(_allSolvers.Count * LargeTaskSolverQuota);
+				if (_availableSolvers.Count >= required && required > 0)
 				{
 					if (_largeTaskQueue.TryDequeue(out var largeTask))
 					{
-						_isLargeTaskRunning = true; 
-						Console.WriteLine($"Starting LARGE task {largeTask.TaskId}. Locking large task slot.");
-						_ = ProcessTaskAsync(largeTask, requiredForLargeTask);
+						_isLargeTaskRunning = true;
+						_ = ProcessTaskAsync(largeTask, required);
 					}
 				}
 			}
 
 			if (_smallTaskQueue.TryPeek(out _))
 			{
-				int totalSmallQuota = _allSolvers.Count - (int)Math.Ceiling(_allSolvers.Count * LargeTaskSolverQuota);
-				int largeTaskSolversInUse = _isLargeTaskRunning ? (int)Math.Ceiling(_allSolvers.Count * LargeTaskSolverQuota) : 0;
-				int availableForSmallTasks = _availableSolvers.Count;
-
-				if (availableForSmallTasks >= SolversPerSmallTask)
+				while (_availableSolvers.Count >= SolversPerSmallTask && _smallTaskQueue.TryDequeue(out var smallTask))
 				{
-					if (_smallTaskQueue.TryDequeue(out var smallTask))
-					{
-						Console.WriteLine($"Starting SMALL task {smallTask.TaskId}.");
-						_ = ProcessTaskAsync(smallTask, SolversPerSmallTask);
-					}
+					_ = ProcessTaskAsync(smallTask, SolversPerSmallTask);
 				}
 			}
 
@@ -110,156 +206,181 @@ public static class Scheduler
 		}
 	}
 
-	private static async Task ProcessTaskAsync(CalculationTask task, int solversToAllocate)
+	private static async Task ProcessTaskAsync(CalculationTask task, int count)
 	{
-		List<ClientConnection> assignedSolvers = [];
+		List<ClientConnection> assigned = new();
 		try
 		{
-			for (int i = 0; i < solversToAllocate; i++)
+			for (int i = 0; i < count; i++)
 			{
-				if (_availableSolvers.TryDequeue(out var solver)) assignedSolvers.Add(solver);
+				if (_availableSolvers.TryDequeue(out var solver))
+				{
+					_solverBusyState[solver.Id] = true;
+					assigned.Add(solver);
+				}
 			}
-			Console.WriteLine($"[Task {task.TaskId}] {assignedSolvers.Count} solvers allocated. POOL: {_availableSolvers.Count} left.");
 
-			var finalRanks = await CalculatePageRankDistributedAsync(task.Graph, assignedSolvers);
+			Console.WriteLine($"Task {task.TaskId}: Allocated {assigned.Count} solvers.");
+			var result = await CalculatePageRankDistributedAsync(task.Graph, assigned);
 
-			var resultMessage = new NetworkMessage { Type = MessageType.CalculationComplete, JsonPayload = JsonSerializer.Serialize(finalRanks) };
-			await task.MauiClient.WriteMessageAsync(resultMessage);
+			await task.MauiClient.WriteMessageAsync(new NetworkMessage
+			{
+				Type = MessageType.CalculationComplete,
+				JsonPayload = JsonSerializer.Serialize(result)
+			});
 		}
 		catch (Exception ex)
-		{ 
-
+		{
+			Console.WriteLine($"Task {task.TaskId} failed: {ex.Message}");
 		}
 		finally
 		{
-			Console.WriteLine($"[Task {task.TaskId}] Task finished. Returning {assignedSolvers.Count} solvers.");
-			foreach (var solver in assignedSolvers)
+			Console.WriteLine($"Task {task.TaskId} cleaning up resources...");
+			foreach (var solver in assigned)
 			{
-				if (solver.IsConnected) _availableSolvers.Enqueue(solver);
-				else _allSolvers.TryRemove(solver.Id, out _); 
+				if (solver.IsConnected)
+				{
+					_solverBusyState[solver.Id] = false; 
+					solver.UpdateHeartbeat();
+					_availableSolvers.Enqueue(solver);
+				}
+				else
+				{
+					CleanupSolver(solver, "Finished task but disconnected");
+				}
 			}
 
-			if (task.IsLargeTask)
-			{
-				_isLargeTaskRunning = false;
-				Console.WriteLine($"Large task slot is now free.");
-			}
-			Console.WriteLine($"POOL STATUS: {_availableSolvers.Count} solvers are now available.");
+			if (task.IsLargeTask) _isLargeTaskRunning = false;
 			task.MauiClient.Disconnect();
 		}
 	}
 
-
 	private static async Task<Dictionary<int, double>> CalculatePageRankDistributedAsync(Graph graph, List<ClientConnection> solvers)
 	{
 		int nodeCount = graph.Nodes.Count;
-		if (nodeCount == 0) return [];
-
 		var ranks = graph.Nodes.ToDictionary(n => n.Id, n => 1.0 / nodeCount);
+		var links = graph.Nodes.ToDictionary(n => n.Id, n => graph.Edges.Count(e => e.SourceId == n.Id));
+		int iteration = 0;
 
-		var outgoingLinks = graph.Nodes.ToDictionary(
-			n => n.Id,
-			n => graph.Edges.Count(e => e.SourceId == n.Id)
-		);
-
-		for (int i = 0; i < MaxIterations; i++)
+		while (iteration < MaxIterations)
 		{
-			Console.WriteLine($"--- Iteration {i + 1} for task... ---");
+			if (solvers.Count == 0) throw new Exception("All solvers lost.");
 
-			var previousRanks = new Dictionary<int, double>(ranks);
+			Console.WriteLine($"Iteration {iteration + 1}/{MaxIterations}. Active: {solvers.Count}");
+
+			var prevRanks = new Dictionary<int, double>(ranks);
+			var partitions = Partition(graph.Nodes, solvers.Count);
 			var tasks = new List<Task<PartialResult>>();
-			var nodePartitions = Partition(graph.Nodes, solvers.Count);
+			var solverMap = new Dictionary<Task<PartialResult>, ClientConnection>();
 
-			for (int j = 0; j < solvers.Count; j++)
+			for (int i = 0; i < solvers.Count; i++)
 			{
-				var solver = solvers[j];
-				var nodePartition = nodePartitions[j];
+				var s = solvers[i];
+				var part = partitions[i];
+				if (!part.Any()) continue;
 
-				if (nodePartition.Count == 0) continue;
-
-				var solverTask = new SolverTask
+				var t = new SolverTask
 				{
 					FullGraph = graph,
-					NodeIdsToCalculate = nodePartition.Select(n => n.Id).ToList(),
+					NodeIdsToCalculate = part.Select(n => n.Id).ToList(),
 					CurrentRanks = ranks,
-					OutgoingLinks = outgoingLinks
+					OutgoingLinks = links
 				};
 
-				tasks.Add(ExecuteTaskOnSolverAsync(solver, solverTask));
+				var task = ExecuteTaskOnSolverAsync(s, t);
+				tasks.Add(task);
+				solverMap[task] = s;
 			}
 
-			var partialResults = await Task.WhenAll(tasks);
-
-			var newRanks = new Dictionary<int, double>();
-			foreach (var result in partialResults)
+			try
 			{
-				if (result?.CalculatedRanks == null) continue;
-				foreach (var rankEntry in result.CalculatedRanks)
+				await Task.WhenAll(tasks);
+
+				var newRanks = new Dictionary<int, double>();
+				foreach (var t in tasks)
 				{
-					newRanks[rankEntry.Key] = rankEntry.Value;
+					foreach (var kvp in t.Result.CalculatedRanks) newRanks[kvp.Key] = kvp.Value;
 				}
-			}
 
-			foreach (var nodeId in ranks.Keys)
+				foreach (var id in ranks.Keys)
+					if (!newRanks.ContainsKey(id)) newRanks[id] = ranks[id];
+
+				double sum = newRanks.Values.Sum();
+				if (sum > 0) foreach (var k in newRanks.Keys.ToList()) newRanks[k] /= sum;
+
+				ranks = newRanks;
+
+				double diff = prevRanks.Sum(kvp => Math.Abs(kvp.Value - ranks.GetValueOrDefault(kvp.Key, 0)));
+				GC.Collect();
+
+				if (diff < Epsilon) break;
+
+				iteration++;
+			}
+			catch
 			{
-				if (!newRanks.ContainsKey(nodeId))
+				Console.WriteLine("Worker crash detected. Rebalancing...");
+				var failed = new List<ClientConnection>();
+
+				foreach (var entry in solverMap)
 				{
-					newRanks[nodeId] = ranks[nodeId];
+					if (entry.Key.IsFaulted || !entry.Value.IsConnected)
+					{
+						failed.Add(entry.Value);
+					}
 				}
-			}
 
-			double rankSum = newRanks.Values.Sum();
-			foreach (var key in newRanks.Keys)
-			{
-				newRanks[key] /= rankSum;
-			}
+				foreach (var f in failed)
+				{
+					solvers.Remove(f);
+					CleanupSolver(f, "Crash during calculation");
+				}
 
-			ranks = newRanks;
-
-			double diff = previousRanks.Sum(kvp => Math.Abs(kvp.Value - ranks.GetValueOrDefault(kvp.Key, 0)));
-			Console.WriteLine($"Iteration {i + 1} finished. Change (L1 Norm): {diff}");
-			if (diff < Epsilon)
-			{
-				Console.WriteLine($"Converged after {i + 1} iterations.");
-				break;
+				if (solvers.Count == 0) throw;
 			}
 		}
-
 		return ranks;
 	}
 
 	private static async Task<PartialResult> ExecuteTaskOnSolverAsync(ClientConnection solver, SolverTask task)
 	{
-		var request = new NetworkMessage
+		try
 		{
-			Type = MessageType.AssignTask,
-			JsonPayload = JsonSerializer.Serialize(task)
-		};
-		await solver.WriteMessageAsync(request);
+			await solver.WriteMessageAsync(new NetworkMessage
+			{
+				Type = MessageType.AssignTask,
+				JsonPayload = JsonSerializer.Serialize(task)
+			});
 
-		var response = await solver.ReadMessageAsync();
-		if (response?.Type != MessageType.PartialResult)
-		{
-			Console.WriteLine($"Warning: Solver {solver.Id} returned an unexpected message type or disconnected.");
-			return new PartialResult { CalculatedRanks = new Dictionary<int, double>() };
+			while (true)
+			{
+				var msg = await solver.ReadMessageAsync() 
+					?? throw new IOException("Disconnected");
+				if (msg.Type == MessageType.Heartbeat || msg.Type == MessageType.Ping)
+				{
+					solver.UpdateHeartbeat();
+					continue;
+				}
+
+				if (msg.Type == MessageType.PartialResult)
+				{
+					solver.UpdateHeartbeat();
+					return JsonSerializer.Deserialize<PartialResult>(msg.JsonPayload) ?? new PartialResult();
+				}
+			}
 		}
-
-		return JsonSerializer.Deserialize<PartialResult>(response.JsonPayload) ?? new PartialResult();
+		catch
+		{
+			throw;
+		}
 	}
 
 	private static List<List<T>> Partition<T>(IEnumerable<T> source, int size)
 	{
 		var partitions = new List<List<T>>();
-		for (int i = 0; i < size; i++)
-		{
-			partitions.Add([]);
-		}
-
+		for (int i = 0; i < size; i++) partitions.Add(new List<T>());
 		int index = 0;
-		foreach (var item in source)
-		{
-			partitions[index++ % size].Add(item);
-		}
+		foreach (var item in source) partitions[index++ % size].Add(item);
 		return partitions;
 	}
 }

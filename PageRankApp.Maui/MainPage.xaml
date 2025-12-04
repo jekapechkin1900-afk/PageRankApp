@@ -184,5 +184,38 @@
                           DragInteraction="OnDragInteraction"
                           EndInteraction="OnEndInteraction" />
         </Border>
+
+        <!-- СТАТУС КЛАСТЕРА -->
+        <Border Grid.Column="1" VerticalOptions="Start" HorizontalOptions="End" 
+        Margin="20" BackgroundColor="White" Stroke="#E5E7EB" 
+        StrokeThickness="1" Padding="15,10">
+            <Border.Shadow>
+                <Shadow Brush="Black" Offset="0,2" Radius="5" Opacity="0.1"/>
+            </Border.Shadow>
+            <HorizontalStackLayout Spacing="15">
+                <HorizontalStackLayout Spacing="5">
+                    <Ellipse WidthRequest="10" HeightRequest="10" Fill="Gray"/>
+                    <Label Text="{Binding ClusterTotalStr}" FontSize="12" TextColor="Gray" VerticalOptions="Center"/>
+                </HorizontalStackLayout>
+
+                <HorizontalStackLayout Spacing="5">
+                    <Ellipse WidthRequest="10" HeightRequest="10" Fill="#10B981"/>
+                    <!-- Green -->
+                    <Label Text="{Binding ClusterFreeStr}" FontSize="12" TextColor="#10B981" VerticalOptions="Center"/>
+                </HorizontalStackLayout>
+
+                <HorizontalStackLayout Spacing="5">
+                    <Ellipse WidthRequest="10" HeightRequest="10" Fill="#F59E0B"/>
+                    <!-- Orange -->
+                    <Label Text="{Binding ClusterBusyStr}" FontSize="12" TextColor="#F59E0B" VerticalOptions="Center"/>
+                </HorizontalStackLayout>
+
+                <HorizontalStackLayout Spacing="5">
+                    <Ellipse WidthRequest="10" HeightRequest="10" Fill="#EF4444"/>
+                    <!-- Red -->
+                    <Label Text="{Binding ClusterCrashedStr}" FontSize="12" TextColor="#EF4444" VerticalOptions="Center"/>
+                </HorizontalStackLayout>
+            </HorizontalStackLayout>
+        </Border>
     </Grid>
 </ContentPage>

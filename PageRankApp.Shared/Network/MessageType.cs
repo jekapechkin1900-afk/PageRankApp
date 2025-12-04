@@ -6,6 +6,10 @@ public enum MessageType
 	CalculationComplete,  
 	RegisterSolver,      
 	AssignTask,         
-	PartialResult,    
+	PartialResult,
+	GetClusterStatus,
+	ClusterStatusResponse,
+	Heartbeat,
+	Ping
 }
 

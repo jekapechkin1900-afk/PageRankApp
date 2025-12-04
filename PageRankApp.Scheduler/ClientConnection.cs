@@ -8,10 +8,13 @@ public class ClientConnection(TcpClient tcpClient)
 	public Guid Id { get; } = Guid.NewGuid();
 	private readonly TcpClient _tcpClient = tcpClient;
 	private readonly NetworkStream _stream = tcpClient.GetStream();
-
+	public DateTime LastHeartbeat { get; set; } = DateTime.UtcNow;
 	public bool IsConnected => _tcpClient.Connected;
+	public Socket Client => _tcpClient.Client;
 	public string RemoteEndPoint => _tcpClient.Client.RemoteEndPoint?.ToString() ?? "N/A";
 
+	public void UpdateHeartbeat() => LastHeartbeat = DateTime.UtcNow;
+	
 	public async Task WriteMessageAsync(NetworkMessage message) => 
 		await NetworkHelper.WriteMessageAsync(_stream, message);
 

@@ -21,6 +21,16 @@ public class MainViewModel : INotifyPropertyChanged
 	private int _schedulerPort;
 	private const int LargeGraphThreshold = 500;
 
+	private string _clusterTotalStr = "Всего: -";
+	private string _clusterFreeStr = "Свободно: -";
+	private string _clusterBusyStr = "Занято: -";
+	private string _clusterCrashedStr = "Упало: -";
+
+	public string ClusterTotalStr { get => _clusterTotalStr; set => SetProperty(ref _clusterTotalStr, value); }
+	public string ClusterFreeStr { get => _clusterFreeStr; set => SetProperty(ref _clusterFreeStr, value); }
+	public string ClusterBusyStr { get => _clusterBusyStr; set => SetProperty(ref _clusterBusyStr, value); }
+	public string ClusterCrashedStr { get => _clusterCrashedStr; set => SetProperty(ref _clusterCrashedStr, value); }
+
 	public bool IsGraphLarge => Nodes.Count > LargeGraphThreshold;
 	public bool CanSaveResults => !IsBusy && _areResultsCalculated;
 	public ObservableRangeCollection<Node> Nodes { get; } = [];
@@ -89,6 +99,46 @@ public class MainViewModel : INotifyPropertyChanged
 		   async () => await OnSaveResults(),
 		   () => !IsBusy && _areResultsCalculated);
 		LoadSettings();
+
+		_ = StartStatusMonitorLoop();
+	}
+
+	private async Task StartStatusMonitorLoop()
+	{
+		while (true)
+		{
+			await FetchClusterStatus();
+			await Task.Delay(3000); 
+		}
+	}
+
+	private async Task FetchClusterStatus()
+	{
+		try
+		{
+			using var client = new TcpClient();
+			var connectTask = client.ConnectAsync(SchedulerIpAddress, SchedulerPort);
+			if (await Task.WhenAny(connectTask, Task.Delay(1000)) != connectTask) return; 
+
+			await using var stream = client.GetStream();
+
+			var req = new NetworkMessage { Type = MessageType.GetClusterStatus };
+			await NetworkHelper.WriteMessageAsync(stream, req);
+
+			var response = await NetworkHelper.ReadMessageAsync(stream);
+			if (response?.Type == MessageType.ClusterStatusResponse)
+			{
+				var status = JsonSerializer.Deserialize<ClusterStatusInfo>(response.JsonPayload);
+				if (status != null)
+				{
+					ClusterTotalStr = $"Всего: {status.TotalSolvers}";
+					ClusterFreeStr = $"Свободно: {status.AvailableSolvers}";
+					ClusterBusyStr = $"Занято: {status.BusySolvers}";
+					ClusterCrashedStr = $"Упало: {status.CrashedSolvers}";
+				}
+			}
+		}
+		catch {  }
 	}
 
 	private void LoadSettings()
@@ -277,10 +327,39 @@ public class MainViewModel : INotifyPropertyChanged
 			return;
 		}
 
+		ClusterStatusInfo currentStatus = null;
+		try
+		{
+			using var statusClient = new TcpClient();
+			await statusClient.ConnectAsync(SchedulerIpAddress, SchedulerPort);
+			await using var sStream = statusClient.GetStream();
+			await NetworkHelper.WriteMessageAsync(sStream, new NetworkMessage { Type = MessageType.GetClusterStatus });
+			var resp = await NetworkHelper.ReadMessageAsync(sStream);
+			currentStatus = JsonSerializer.Deserialize<ClusterStatusInfo>(resp.JsonPayload);
+		}
+		catch
+		{
+			await App.Current.MainPage.DisplayAlert("Ошибка связи", "Не удалось связаться с планировщиком для проверки ресурсов.", "OK");
+			return;
+		}
+
+		bool confirm = await App.Current.MainPage.DisplayAlert(
+			"Подтверждение запуска",
+			$"Статус кластера:\n" +
+			$"- Всего воркеров: {currentStatus.TotalSolvers}\n" +
+			$"- Доступно сейчас: {currentStatus.AvailableSolvers}\n" +
+			$"- Занято другими: {currentStatus.BusySolvers}\n" +
+			$"- Ранее упало: {currentStatus.CrashedSolvers}\n\n" +
+			$"Запустить вычисление для {Nodes.Count} узлов?",
+			"Запустить",
+			"Отмена");
+
+		if (!confirm) return;
+
 		SetBusy(true, "Выполняется расчет...");
 		try
 		{
-			StatusMessage = "Подключени к планировщику...";
+			StatusMessage = "Подключение к планировщику...";
 			using var client = new TcpClient();
 			await client.ConnectAsync(SchedulerIpAddress, SchedulerPort); 
 			await using var stream = client.GetStream();

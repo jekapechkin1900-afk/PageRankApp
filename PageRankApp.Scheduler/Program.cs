@@ -8,6 +8,7 @@ Console.WriteLine("Scheduler is running on port 8888...");
 Console.WriteLine("Waiting for connections from MAUI client and Solvers...");
 
 _ = Task.Run(Scheduler.TaskDispatcherLoop);
+_ = Task.Run(Scheduler.WatchdogLoop);
 
 while (true)
 {
